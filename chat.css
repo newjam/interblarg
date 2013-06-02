@@ -1,0 +1,28 @@
+
+/* Thank you Yahoo! */
+
+body {
+  background: #2c4762;
+  font: normal 14px/1.4 Helvetica,Arial,sans-serif;
+}
+
+#content {
+  width: 50%;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+input {
+  width: 100%;
+  border-width: 0;
+  outline-width: 0;
+}
+
+#content > div {
+  background-color: #fff;
+  padding: 15px 20px;
+  border-radius: 6px;
+  box-shadow: 0 3px 5px;
+  margin-bottom: 15px;
+}
+

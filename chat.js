@@ -6,8 +6,10 @@ stream.onerror = function(e) {
   throw "EventSource error"
 }
 
-stream.onmessage = function(e) {
-  $('#main').after('<div>' + e.data + '</div>')
+stream.onmessage = function(e) { addMessage(e.data) }
+
+addMessage = function(msg) {
+  $('#inputDiv').after('<div>' + msg + '</div>')
 }
 
 Zepto(function($){
@@ -15,9 +17,17 @@ Zepto(function($){
     if(e.keyCode == '13') {
       $.post(baseURL, this.value, function(r){
         if(r === 'ok' ){
-          $('#input').val("")
+          $('#input').val('')
         }
       })
     }
   })
+
+
+  // load the previous messages
+  $.getJSON(baseURL + '/recent', function(data) {
+    data.reverse()
+    data.forEach(addMessage)
+  })
+
 })

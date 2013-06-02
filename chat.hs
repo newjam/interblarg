@@ -22,16 +22,23 @@ import Network.Wai.EventSource
 main = scotty 8000 routes
 
 routes = do
+  get  "/chat.css"   $ file "chat.css"
   get  "/chat.js"    $ file "chat.js"
   get  "/:chan"      $ file "chat.html"
   post "/:chan"        postMessage
   get  "/:chan/stream" messageStream
+  get  "/:chan/recent" recentMessages
+
 
 postMessage chan = do
   conn <- liftIO . connect $ defaultConnectInfo
   msg <- body
   let msg' = toByteString . fromLazyByteString $ msg
-  liftIO . runRedis conn $ publish chan msg'
+  liftIO . runRedis conn $ do
+    -- add exception handling
+    R.lpush chan [msg']
+    R.ltrim chan 0 9
+    R.publish chan msg'
   text "ok"
 
 messageStream chan = do
@@ -42,6 +49,14 @@ messageStream chan = do
   -- create a conduit Source
   let stream = sourceRedisChannel conn chan
   source . sourceToSource $ (stream $= redis2EventSource) 
+
+recentMessages chan = do 
+  conn <- liftIO . connect $ defaultConnectInfo
+  messages <- liftIO . runRedis conn $ do
+    results <- R.lrange chan 0 9
+    let toMaybe = either (const Nothing) Just
+    return . toMaybe $ results
+  json messages
 
 -- Redis Stuff
 subscribe' :: B.ByteString -> Redis (Either R.Reply B.ByteString)
