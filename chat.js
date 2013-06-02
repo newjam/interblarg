@@ -2,14 +2,20 @@
 var baseURL = document.URL
 var stream = new EventSource(baseURL + '/stream')
 
+var imgRegex = RegExp('(http[s]?:\/\/.*\.(?:png|jpg|jpeg|gif))')
+
 stream.onerror = function(e) {
-  throw "EventSource error"
+  // try again?
+  stream = new EventSource(baseURL + '/stream')
+  console.log('EventSource error')
 }
 
 stream.onmessage = function(e) { addMessage(e.data) }
 
 addMessage = function(msg) {
-  $('#inputDiv').after('<div>' + msg + '</div>')
+  inner = imgRegex.test(msg) ? "<img src='" + msg + "'/>" : msg
+
+  $('#inputDiv').after('<div>' + inner + '</div>')
 }
 
 Zepto(function($){
