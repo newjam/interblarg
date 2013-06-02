@@ -1,7 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE NoMonomorphismRestriction #-}
 
-
 import Web.Scotty
 
 import Data.Conduit
@@ -20,25 +19,29 @@ import Database.Redis.Core
 
 import Network.Wai.EventSource
 
+main = scotty 8000 routes
 
-main = scotty 8000 $ do
-  get "/chat.js" $ file "chat.js"
-  get "/:chan" $ file "chat.html"
-  post "/:chan" $ \chan -> do
-    liftIO . putStrLn . show $ chan
-    conn <- liftIO . connect $ defaultConnectInfo
-    msg <- body
-    let msg' = toByteString . fromLazyByteString $ msg
-    liftIO . runRedis conn $ publish chan msg'
-    text "ok"
-  get "/:chan/stream" $ \chan -> do
-    -- act as an EventSource stream
-    header "Content-Type" "text/event-stream"
-    -- create a connection to Redis
-    conn <- liftIO . connect $ defaultConnectInfo
-    -- create a conduit Source
-    let stream = sourceRedisChannel conn chan
-    source . sourceToSource $ (stream $= redis2EventSource) 
+routes = do
+  get  "/chat.js"    $ file "chat.js"
+  get  "/:chan"      $ file "chat.html"
+  post "/:chan"        postMessage
+  get  "/:chan/stream" messageStream
+
+postMessage chan = do
+  conn <- liftIO . connect $ defaultConnectInfo
+  msg <- body
+  let msg' = toByteString . fromLazyByteString $ msg
+  liftIO . runRedis conn $ publish chan msg'
+  text "ok"
+
+messageStream chan = do
+  -- act as an EventSource stream
+  header "Content-Type" "text/event-stream"
+  -- create a connection to Redis
+  conn <- liftIO . connect $ defaultConnectInfo
+  -- create a conduit Source
+  let stream = sourceRedisChannel conn chan
+  source . sourceToSource $ (stream $= redis2EventSource) 
 
 -- Redis Stuff
 subscribe' :: B.ByteString -> Redis (Either R.Reply B.ByteString)
@@ -59,6 +62,4 @@ pubsubToBS (Msg (Message _ msg)) =
 
 redis2EventSource = CL.map $ 
   ServerEvent Nothing Nothing . return . pubsubToBS
-
-
 
