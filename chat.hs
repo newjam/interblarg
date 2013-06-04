@@ -1,14 +1,21 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE NoMonomorphismRestriction #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE DeriveDataTypeable #-}
 
 import Web.Scotty
 
 import Data.Conduit
 import qualified Data.Conduit.List as CL
 
+-- Aeson instances for free
+import Data.Data
+import Data.Typeable
+
+
 import Data.Monoid (mconcat)
 import Control.Monad.IO.Class (liftIO, MonadIO)
-import Control.Monad (forM_)
+import Control.Monad (forM_, void)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as C
 
@@ -21,12 +28,36 @@ import Database.Redis.PubSub
 import Database.Redis.Core
 
 import Network.Wai.EventSource
+import Network.Wai
 
 import Control.Concurrent.Timer (repeatedTimer)
 import Control.Concurrent.Suspend (sDelay)
 
+import Crypto.Hash (hash, digestToByteString, SHA1, SHA512, Digest)
+
+import Data.String
+
+import Data.ByteString.Base64 as B64
+
+import Network.HTTP.Types.Header (hUserAgent)
+
+import qualified Network.Socket as S
+
+import qualified Data.Aeson.Generic as JSON
+
+import Data.Semigroup
+
+instance Semigroup B.ByteString where
+  (<>) = mappend
 
 main = scotty 8000 routes
+
+data Blah = Blah
+  { payload :: B.ByteString
+  , colorId :: B.ByteString
+  } deriving (Data, Typeable, Show)
+
+
 
 file' ct fn = do
   header "Content-Type" ct
@@ -34,10 +65,11 @@ file' ct fn = do
 
 routes = do
   -- if we don't send data to subscribers periodically,
-  -- the http connection will tiome out.
+  -- the http connection will time out.
   conn <- liftIO $ connect defaultConnectInfo
   liftIO $  repeatedTimer (keepAlive conn) (sDelay 10)
 
+  get  "/identify"   $ request >>= json . identify
   get  "/channels"     listChannels
   get  "/:chan/stream" messageStream
   get  "/:chan/recent" recentMessages
@@ -46,16 +78,53 @@ routes = do
   get  "/:chan"      $ file' "text/html" "chat.html"
   post "/:chan"        postMessage
 
+
+fuck r = r >>= either 
+  (\(R.Error x) -> error . show $ "you fucked redis: " <> x)
+  return
+
+fucking r = r >>= maybe
+  (error "you thought you didn't fuck up but you did.")
+  return
+
 postMessage chan = do
   conn <- liftIO . connect $ defaultConnectInfo
+  req <- request
+  let poster = identify req
   msg <- body
-  let msg' = toByteString . fromLazyByteString $ msg
+  let lazy2Strict = toByteString . fromLazyByteString
+  let msg' = lazy2Strict msg
   liftIO . runRedis conn $ do
     -- add exception handling
     R.sadd "channels" [chan]
-    R.lpush chan [msg']
+    let posters = chan <> "-posters"
+    -- if this is a new user assign them a number
+    numRemoved <- fuck $ R.lrem posters 1 poster
+    n <- fuck $ R.lpush posters [poster]
+
+    let numColors = 16 
+    i <- if n > numColors
+    then do
+      oldPoster <- fucking . fuck $ R.rpop posters
+      oldNumber <- fucking . fuck $ R.get (chan <> "-" <> oldPoster)
+      R.del [oldPoster]
+      return oldNumber 
+      --liftIO . print $ "end of cycle, last active poster: " <> oldPoster
+    else
+      return . fromString . show $ n
+
+    let isNewPoster = numRemoved == 0
+    x <- if isNewPoster 
+    then do
+      void $ R.set (chan <> "-" <> poster) i
+      return i
+    else fucking . fuck $ R.get (chan <> "-" <> poster)
+
+    let msg'' = lazy2Strict . JSON.encode $ Blah msg' ("color" <> x)
+
+    R.lpush chan [msg'']
     R.ltrim chan 0 9
-    R.publish chan msg'
+    R.publish chan msg''
   text "ok"
 
 messageStream chan = do
@@ -74,6 +143,15 @@ recentMessages chan = do
     return . toMaybe $ results
   json messages
 
+foob :: S.SockAddr -> B.ByteString
+foob (S.SockAddrInet _  addr) = fromString . show $ addr
+foob (S.SockAddrInet6 _ _ (a, b, c, d) _) = B.concat . map (fromString . show) $ [a,b,c,d]
+foob (S.SockAddrUnix sock) = fromString sock
+
+identify req = B64.encode . sha1. B.concat $ [user_agent, ip] where
+    ip = fromString . show . foob . remoteHost $ req
+    user_agent = maybe "" id . lookup hUserAgent .
+        requestHeaders $ req
 
 toMaybe = either (const Nothing) Just
 
@@ -108,3 +186,8 @@ redis2EventSource = CL.map $ quz . pubsubToBS
 quz msg = if C.head msg == ':'
   then CommentEvent . fromByteString . C.tail $ msg
   else ServerEvent Nothing Nothing [fromByteString msg]
+
+-- Crypto
+sha1 :: B.ByteString -> B.ByteString
+sha1 = digestToByteString . (hash :: B.ByteString -> Digest SHA1)
+

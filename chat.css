@@ -30,3 +30,62 @@ input {
   margin-bottom: 15px;
 }
 
+#content > div.color1 {
+  background-color: #F49AC2;
+}
+
+#content > div.color2 {
+  background-color: #FDC68A;
+}
+
+#content > div.color3 {
+  background-color: #82CA9D;
+}
+
+#content > div.color4 {
+  background-color: #8493CA;
+}
+
+#content > div.color5 {
+  background-color: #F6989D;
+}
+
+#content > div.color6 {
+  background-color: #FFF79A;
+}
+#content > div.color7 {
+  background-color: #7BCDC8;
+}
+
+#content > div.color8 {
+  background-color: #8882BE;
+}
+
+#content > div.color9 {
+  background-color: #F7977A;
+}
+
+#content > div.color10 {
+  background-color: #C4DF9B;
+}
+#content > div.color11 {
+  background-color: #6ECFF6;
+}
+
+#content > div.color12 {
+  background-color: #A187BE;
+}
+#content > div.color13 {
+  background-color: #F9AD81;
+}
+
+#content > div.color14 {
+  background-color: #A2D39C;
+}
+#content > div.color15 {
+  background-color: #7EA7D8;
+}
+
+#content > div.color16 {
+  background-color: #BC8DBF;
+}

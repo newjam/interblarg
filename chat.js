@@ -13,9 +13,10 @@ stream.onerror = function(e) {
 stream.onmessage = function(e) { addMessage(e.data) }
 
 addMessage = function(msg) {
-  inner = imgRegex.test(msg) ? "<img src='" + msg + "'/>" : msg
+  obj =  $.parseJSON(msg)
+  inner = imgRegex.test(msg) ? "<img src='" + obj.payload + "'/>" : obj.payload
 
-  $('#inputDiv').after('<div>' + inner + '</div>')
+  $('#inputDiv').after("<div class='" + obj.colorId + "'>" + inner + "</div>")
 }
 
 Zepto(function($){
