@@ -22,6 +22,11 @@ input {
   outline-width: 0;
 }
 
+#title {
+  font-size: 100%;
+  font-height: 15%;
+}
+
 #content > div {
   background-color: #fff;
   padding: 15px 20px;
@@ -29,6 +34,9 @@ input {
   box-shadow: 0 3px 5px;
   margin-bottom: 15px;
 }
+
+
+/* maybe this should be dynamic, to avoid this copy and paste action  */
 
 #content > div.color1 {
   background-color: #F49AC2;
