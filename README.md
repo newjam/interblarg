@@ -8,5 +8,5 @@ Utilizing the following hip web technologies
 * Redis
 * EventSource
 
-!(/example.png)
+![](/example.png)
 
