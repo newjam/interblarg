@@ -12,8 +12,14 @@ stream.onerror = function(e) {
 }
 
 stream.addEventListener("newMessage", function(e){
-  addMessage(e.data)
+  addMessage($.parseJSON(e.data))
 })
+
+stream.addEventListener("updateUser", function(e){
+  updateUser($.parseJSON(e.data))
+})
+
+
 
 wrapUrls = function(x){
   return x.replace(urlRegex, function(url){  
@@ -31,30 +37,40 @@ changeName = function() {
 
   $.post(baseURL + '/me', newName, function(r){ console.log(r) }) 
 
-  alert(newName)
+}
+
+updateUser = function(data){
+  console.log("user[" + data.id + "].name = '" + data.name + "'")
+  var s = "div[data-user='"+ data.id +"'] > div.itemHeader > div.name"
+/*  var test = $(s).not(' > input') */
+  var inputs = $(s + ' > input').not(':focus').val(data.name)
+  var divs = $(s).not(s + ' > input').text(data.name) 
+ 
+//  var x = $("div[data-user='"+ data.id +"'] > div.itemHeader > div.name").text(data.name)
+//div.name input")/*.filter(':not(:focus)')*/.val(data.name)
 }
 
 addMessage = function(msg) {
   console.log(msg)
 
-  var obj =  $.parseJSON(msg)
+//  var obj =  0$.parseJSON(msg)
 
-  var time = $('<div/>').addClass('time').text(moment.unix(obj.time).fromNow())
+  var time = $('<div/>').addClass('time').text(moment.unix(msg.time).fromNow())
   var name = $('<div/>').addClass('name')
 
   var head = $('<div/>').addClass('itemHeader').append(name).append(time)
     
-  var body = $('<div/>').html(wrapUrls(obj.payload))
+  var body = $('<div/>').html(wrapUrls(msg.payload))
 
-  var x = $('<div/>').append(head).append(body).data('user', obj.user)
+  var x = $('<div/>').append(head).append(body).data('user', msg.user)
 
   $('#inputDiv').after(x)
 
-  $.getJSON(baseURL + '/' + obj.user, function(userInfo){
+  $.getJSON(baseURL + '/' + msg.user, function(userInfo){
     x.addClass('color' + userInfo.color)
 
     if(userInfo.id === me){
-      name.append($('<input/>').val(userInfo.name).onEnter(changeName))
+      name.append($('<input/>').val(userInfo.name).keyup(changeName))
     }else{
       name.text(userInfo.name)
     }

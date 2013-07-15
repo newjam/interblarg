@@ -23,6 +23,8 @@ import qualified Data.ByteString.Char8 as C
 import Blaze.ByteString.Builder
 import Blaze.ByteString.Builder.ByteString
 
+import Data.ByteString.Lazy (fromChunks)
+
 import qualified Database.Redis as R
 import Database.Redis.PubSub
 import Database.Redis.Core
@@ -38,17 +40,20 @@ import Crypto.Hash (hash, digestToByteString, SHA1, SHA512, Digest)
 
 import Data.String
 
-import Data.ByteString.Base64.URL as B64
+import qualified Data.ByteString.Base64.URL as B64
 
 import Network.HTTP.Types.Header (hUserAgent)
 
 import qualified Network.Socket as S
 
-import qualified Data.Aeson.Generic as JSON
-import Data.Aeson (ToJSON(..), (.=), object)
+import Data.Maybe (mapMaybe)
+
+import qualified Data.Aeson.Generic as GSON
+import Data.Aeson (FromJSON(..), ToJSON(..), (.=), object, encode, decode)
 
 import Data.Semigroup
 import Control.Applicative
+import Control.Monad
 
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Data.Time.Clock
@@ -78,12 +83,12 @@ main = scotty 8000 routes
 
 data ChatMsg = ChatMsg
   { payload :: B.ByteString
---  , colorId :: B.ByteString -- Should probable have better type, not just BS
   , user :: B.ByteString
   , time :: Integer
   } deriving (Data, Typeable, Show)
 
-
+instance ToJSON ChatMsg where
+  toJSON = GSON.toJSON
 
 file' ct fn = do
   header "Content-Type" ct
@@ -169,6 +174,9 @@ foobar chan poster = do
     void $ R.set poster' n'
     return n'
 
+-- assume user does not have a color.
+-- assign user a color if one is available
+-- otherwise, take the color of an old user.
 getOrAssignColor chan poster = do
   let posters = "chan["<>chan<>"].users" -- <> "-posters"
   -- if this is a new user assign them a number
@@ -210,130 +218,92 @@ instance ToJSON User where
 
 changeMe :: C.ByteString -> ActionM ()
 changeMe chan = do
-  user <- identify <$> request
-  let nameKey = "chan["<>chan<>"].users["<>user<>"].name"
+  userId <- identify <$> request
+  let nameKey = "chan["<>chan<>"].users["<>userId<>"].name"
   newName <- lazy2Strict <$> body
   conn <- liftIO . connect $ defaultConnectInfo
-  liftIO $ runRedis conn $ do
+  redis conn $ do
     R.set nameKey newName
 
-    --let event = serverEvent "updateUser" msg
 
     -- publish msg to all clients
-    --R.publish chan event
+    let msg = lazy2Strict . encode $ User userId Nothing (Just newName)
+    let event = serverEvent "updateUser" msg
+    R.publish chan event
   text "ok"
 
-  --body >>= liftIO . print
-  --body >>= json
 
--- 
-
--- createUser :: ByteString -> Redis User
--- set default user info, eg {name:"user1", color:"1"}
-
--- getUser :: '''
--- get user info. if the info doesn't exist, createUser
-
-
---createUser :: C.ByteString -> C.ByteString -> Redis User
---createUser chan userId = do
-  -- color
-  -- name
-  -- user
-  --return $ User userId color name
-
-  -- if userId is in the set of users
-  -- then 
+getOrCreateName :: C.ByteString -> C.ByteString -> Redis C.ByteString
+getOrCreateName chan userId = getName >>= maybe assignName return where
+  getName = fuck $ R.get nameKey
+  assignName = do
+    n <- fuck $ R.incr counterKey
+    let name = fromString $ "user" ++ (show n)
+    R.set nameKey name
+    return name
+  base = "chan["<>chan<>"]"
+  nameKey = base<>".users["<>userId<>"].name"
+  counterKey = base<>".nameCounter"
 
 
-{-
-have a color pool. ask for a color, if there is a color in pool, give one
-otherwise, take a color back from a user, and return it. make sure
-to delete the key value pair for that user/color association.
--}
 
-createName :: C.ByteString -> C.ByteString -> Redis C.ByteString
-createName chan userId = do
-  let base = "chan["<>chan<>"]"
-  let counterKey = base<>".nameCounter"
-  x <- fuck $ R.incr counterKey
-  let nameKey = base<>".users["<>userId<>"].name"
-  let name = "user"<>(fromString . show $ x)
-  R.set nameKey name
-  return name
+userInfo' :: C.ByteString -> C.ByteString -> Redis User
+userInfo' chan user = User user <$> color <*> name where
+  color = Just <$> getOrAssignColor chan user
+  name  = Just <$> getOrCreateName chan user
+
+
+redis :: Connection -> Redis a -> ActionM a
+redis conn = liftIO . runRedis conn
 
 userInfo chan userId = do
   conn <- liftIO . connect $ defaultConnectInfo
-  let nameKey = "chan["<>chan<>"].users["<>userId<>"].name"
-  info <- liftIO . runRedis conn $ do
-    color <- getOrAssignColor chan userId
-
---    name <- maybe setName return . fuck . R.get $ nameKey
- 
-    mName <- fuck . R.get $ nameKey 
-    name <- maybe (createName chan userId) (return) mName
-    
-    {-name <- case mName of
-      Just name -> return $ Just name 
-      Nothing   -> do
-        let name = "user"<>color
-        R.set nameKey name
-        return $ Just name
-           --name <- maybe ("user"<>color) id <$> (fuck . R.get $ nameKey);
-    -}
-    return $ User userId (Just color) (Just name)
-  
+  info <- redis conn $ userInfo' chan userId
   json info
-{-
-  let getColor = getOrAssignColor chan poster 
-  let nameKey = "chan["<>chan<>"]users["<>poster<>"].name"
-  let getName color = maybe ("user"<>x) id <$> (fuck . R.get $ nameKey)
-  color <- liftIO . runRedis conn $ stuff >>= thing
-  
-  --json $ User "" "" ""
-  json $ User poster color ("user" <> color)
--}
+
 getMe = identify <$> request >>= json
 
+instance Applicative ActionM where
+  pure  = return
+  (<*>) = ap
 
+
+-- |'extractMessage' constructs a 'ChatMsg' from the http post request
+extractMessage :: ActionM ChatMsg
+extractMessage = ChatMsg     <$> payload <*> user <*> time where
+  payload  = lazy2Strict <$> body
+  user     = identify    <$> request
+  time     = truncate    <$> liftIO getPOSIXTime
+
+-- |publish 'msg' to 'chan' via redis
+publishMessage' :: C.ByteString -> ChatMsg -> Redis Integer
+publishMessage' chan msg = do
+  -- add this channel to the set of all channels
+  -- [not used yet, but interesting]
+  R.sadd "channels" [chan]
+
+  let encodedMsg = lazy2Strict . encode $ msg
+
+  -- add msg to persistent list of msgs
+  R.lpush chan [encodedMsg]
+  -- keep only 100 msgs
+  R.ltrim chan 0 99
+
+  -- translate message into valid text/event-source syntax
+  let event = serverEvent "newMessage" encodedMsg
+
+  -- publish msg to all clients
+  fuck $ R.publish chan event
 
 postMessage chan = do
   conn    <- liftIO . connect $ defaultConnectInfo
-  poster  <- identify    <$> request
-  payload <- lazy2Strict <$> body
-  time    <- truncate  <$> liftIO getPOSIXTime
-  listeners <- liftIO . runRedis conn $ do
-    -- add this channel to the set of all channels
-    -- [not used yet, but interesting]
-    R.sadd "channels" [chan]
-
-    let encode = lazy2Strict . JSON.encode
-    let msg = encode $ ChatMsg payload poster time
-
-    -- add msg to persistent list of msgs
-    R.lpush chan [msg]
-    -- keep only 100 msgs
-    R.ltrim chan 0 99
-
-    -- translate message into valid text/event-source syntax
-    let event = serverEvent "newMessage" msg
-
-    -- publish msg to all clients
-    fuck $ R.publish chan event
+  let publishMessage = redis conn . publishMessage' chan 
+  listeners <- extractMessage >>= publishMessage
   debug $ "postMessage " <> (C.pack . show $ listeners)
   text "ok"
 
 debug x = liftIO . putStrLn . C.unpack $ x
 
-
-{-
-
-get's a users info, for now just the color, heh.
-
--}
-
---user chan id = fucking . fuck $ R.get ("chan[" <> chan <> ".users[" <> id <> "]")
-  
 
 {-
 
@@ -390,6 +360,7 @@ single user from channel
 
 -}
 
+
 messageStream chan = do
   -- act as an EventSource stream
   header "Content-Type" "text/event-stream"
@@ -404,11 +375,17 @@ messageStream chan = do
 
   source $ stream $= builder 
 
+recentMessages' :: C.ByteString -> Redis [ChatMsg]
+recentMessages' chan = do
+  rawMessages <- fuck $ R.lrange chan 0 99
+  let decodeMessage :: C.ByteString -> Maybe ChatMsg
+      decodeMessage = GSON.decode . fromChunks . return
+      messages = mapMaybe decodeMessage rawMessages
+  return messages
+
 recentMessages chan = do 
   conn <- liftIO . connect $ defaultConnectInfo
-  messages <- liftIO . runRedis conn $ do
-    results <- R.lrange chan 0 99
-    return . toMaybe $ results
+  messages <- redis conn $ recentMessages' chan
   json messages
 
 foo :: ServerEvent -> C.ByteString
@@ -428,7 +405,7 @@ toMaybe = either (const Nothing) Just
 
 listChannels = do
   conn <- liftIO $ connect defaultConnectInfo
-  channels <- liftIO . runRedis conn $ R.smembers "channels"
+  channels <- redis conn $ R.smembers "channels"
   json . toMaybe $ channels
 
 keepAlive conn = runRedis conn $ do
@@ -454,7 +431,7 @@ pubsubToBS (Msg (Message _ msg)) = msg
 
 serverEvent n d = foo $ ServerEvent n' Nothing [d'] where
   n' = Just . fromByteString . C.cons ' ' $ n
-  d' = fromByteString d
+  d' = fromByteString $ d
 serverComment   = foo . CommentEvent . fromByteString 
 
 -- Crypto
