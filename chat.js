@@ -42,9 +42,8 @@ changeName = function() {
 updateUser = function(data){
   console.log("user[" + data.id + "].name = '" + data.name + "'")
   var s = "div[data-user='"+ data.id +"'] > div.itemHeader > div.name"
-/*  var test = $(s).not(' > input') */
-  var inputs = $(s + ' > input').not(':focus').val(data.name)
-  var divs = $(s).not(s + ' > input').text(data.name) 
+  $(s+'.input > input').not(':focus').val(data.name)
+  $(s+'.display').text(data.name) 
  
 //  var x = $("div[data-user='"+ data.id +"'] > div.itemHeader > div.name").text(data.name)
 //div.name input")/*.filter(':not(:focus)')*/.val(data.name)
@@ -70,9 +69,9 @@ addMessage = function(msg) {
     x.addClass('color' + userInfo.color)
 
     if(userInfo.id === me){
-      name.append($('<input/>').val(userInfo.name).keyup(changeName))
+      name.addClass('input').append($('<input/>').val(userInfo.name).keyup(changeName))
     }else{
-      name.text(userInfo.name)
+      name.addClass('display').text(userInfo.name)
     }
     
   })

@@ -50,6 +50,7 @@ import Data.Maybe (mapMaybe)
 
 import qualified Data.Aeson.Generic as GSON
 import Data.Aeson (FromJSON(..), ToJSON(..), (.=), object, encode, decode)
+import Data.Attoparsec.ByteString.Char8
 
 import Data.Semigroup
 import Control.Applicative
@@ -57,23 +58,6 @@ import Control.Monad
 
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Data.Time.Clock
-{- newtype MyRedis a = Redis (Either Reply a)
-
-get :: RedisCtx
-
-instance MonadRedis MyRedis where
-  liftRedis :: 
-
-I want something like
-
-add :: ByteString -> ByteString ->  MyRedis (Maybe Int)
-add k1 k2 = do
-  ma <- R.get k1 
-  mb <- R.get k2
-  return $ (+) <$> ma <*> mb
-  
-
--}
 
 
 instance Semigroup B.ByteString where
@@ -102,6 +86,7 @@ routes = do
 
   get  "/identify"     $ request >>= json . identify
   get  "/channels"       listChannels
+  --get  "/:chan/info"     channelInfo
   get  "/:chan/stream"   messageStream
   get  "/:chan/recent"   recentMessages
   get  "/:chan/me"       getMe
@@ -114,7 +99,6 @@ routes = do
 
 
 
-
 fuck r = r >>= either 
   (\(R.Error x) -> error . show $ "you fucked redis: " <> x)
   return
@@ -123,31 +107,34 @@ fucking r = r >>= maybe
   (error "you thought you didn't fuck up but you did.")
   return
 
-{--
+{-
+
+TODO
+
+ * update the view of the timestamp periodically so that the relative time
+   is accurately relative to the current time.
  
- on post, parse input and validate it so we don't publish funky or maliscious
- messages such as <script>alert("loser!")</script>
+ * on post, parse input and validate it so we don't publish funky or maliscious
+   messages such as <script>alert("loser!")</script>
 
- also: refactor. this is ugly.
+ * refactor. modularize. this is ugly.
 
- timestamp messages
+ * allow for multiple streams at once, ie /stream1+stream2 would merge
+   the two, sorting by timestamp, posting would publish to both.
+   How to resolve the colors?
 
- allow for multiple streams at once, ie /stream1+stream2 would merge
- the two, sorting by timestamp, posting would publish to both.
- How to resolve the colors?
+ * be able to upload images to amazon cdn
 
- be able to upload images to amazon cdn
+ * I want to easily compose redis values, eg
 
- ooooh! refactor, make a function getOrAssignColor
- and instead of saving the color with the msg, just
- save the user. when loading messages on client
- get the color of the user, and color the post that.
+   add k0 = (+) <$> R.get k0 <*> R.get k1
 
- IMPORTANT: This leaves orphan subscriptions to redis.
- If this were real, that would be pretty important to fix.
- if the http connection is terminated, everything else should too.
+   with exception handling taken care of behind the scones.
 
---}
+ * handle resources better. Currently leaves orphan subscriptions to redis.
+   if the http connection is terminated, everything else should too.
+
+-}
 
 {-
 
@@ -158,6 +145,18 @@ if client hasn't posted in chan before, assign them a new id, the card of the
 associate that client with that id
 
 -}
+
+data ChanInfo = ChanInfo {name::C.ByteString, userCount::Integer, messageCount::Integer}
+  deriving (Show, Typeable, Data)
+
+--chanInfo :: C.ByteString -> Redis ChanInfo
+chanInfo chan = ChanInfo chan <$> userCount where
+  parseInt = maybe (error "ahhhh") id . maybeResult . parse decimal 
+  userCountRaw = fucking . fuck $ R.get ("chan["<>chan<>"].userCount")
+  messageCount = fucking . fuck $ R.get 
+  userCount = parseInt <$> userCountRaw
+
+
 
 foobar chan poster = do
   let chan' = "chan[" <> chan <> "]"
@@ -243,7 +242,7 @@ getOrCreateName chan userId = getName >>= maybe assignName return where
     return name
   base = "chan["<>chan<>"]"
   nameKey = base<>".users["<>userId<>"].name"
-  counterKey = base<>".nameCounter"
+  counterKey = base<>".userCount"
 
 
 
@@ -281,6 +280,8 @@ publishMessage' chan msg = do
   -- add this channel to the set of all channels
   -- [not used yet, but interesting]
   R.sadd "channels" [chan]
+
+  R.incr ("chan["<>chan<>"].messageCount")
 
   let encodedMsg = lazy2Strict . encode $ msg
 

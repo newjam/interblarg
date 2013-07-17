@@ -6,17 +6,6 @@ body {
   font: normal 14px/1.4 Helvetica,Arial,sans-serif;
 }
 
-/*
-#title {
-  width: 50%;
-  margin-left: auto;
-  margin-right: auto;
-  text-align: center;
-  margin-bottom: 20px;
-  font-size: 400%;
-}
-*/
-
 .itemHeader {
   color: #636363;
   padding-bottom: 4px;
@@ -31,7 +20,6 @@ body {
   float: left;
   width: 70%;
 }
-
 
 #content {
   width: 50%;
@@ -48,10 +36,12 @@ img {
 }
 
 input {
+  padding: 0;
   border-width: 0;
   outline-width: 0;
   background: transparent;
   font: inherit;
+  color: inherit;
 }
 
 #content > div {
