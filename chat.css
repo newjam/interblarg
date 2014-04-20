@@ -3,6 +3,7 @@
 
 body {
   background: #2c4762;
+  /*background:url('http://www.tartanmaker.com/generators/generate_shared_tartan.php?id=1850');*/ 
   font: normal 14px/1.4 Helvetica,Arial,sans-serif;
 }
 
@@ -45,11 +46,12 @@ input {
 }
 
 #content > div {
+  background: linear-gradient(top, #000, #FFF 10%);  
   background-color: #fff;
-  padding: 15px 20px;
-  border-radius: 6px;
+  padding: 6px 12px;
+  border-radius: 4px;
   box-shadow: 0 3px 5px;
-  margin-bottom: 15px;
+  margin-bottom: 10px;
 }
 
 

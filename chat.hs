@@ -2,11 +2,17 @@
 {-# LANGUAGE NoMonomorphismRestriction #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE TypeSynonymInstances #-}
+{-# LANGUAGE RankNTypes #-}
+
+
 
 import Web.Scotty
 
 import Data.Conduit
 import qualified Data.Conduit.List as CL
+import Control.Monad.Trans.Resource (register)
 
 -- Aeson instances for free
 import Data.Data
@@ -16,6 +22,7 @@ import Data.Typeable
 import Data.Monoid (mconcat)
 import Control.Monad.IO.Class (liftIO, MonadIO)
 import Control.Monad (forM_, void)
+import Control.Monad.Trans
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Char8 as C
 
@@ -26,8 +33,8 @@ import Blaze.ByteString.Builder.ByteString
 import Data.ByteString.Lazy (fromChunks)
 
 import qualified Database.Redis as R
-import Database.Redis.PubSub
-import Database.Redis.Core
+--import Database.Redis.PubSub
+--import Database.Redis.Core
 
 import Network.Wai.EventSource.EventStream
 import Network.Wai.EventSource
@@ -54,6 +61,7 @@ import Data.Attoparsec.ByteString.Char8
 
 import Data.Semigroup
 import Control.Applicative
+import Control.Applicative.Compose
 import Control.Monad
 
 import Data.Time.Clock.POSIX (getPOSIXTime)
@@ -86,7 +94,7 @@ routes = do
 
   get  "/identify"     $ request >>= json . identify
   get  "/channels"       listChannels
-  --get  "/:chan/info"     channelInfo
+  get  "/:chan/info"     chanInfo'
   get  "/:chan/stream"   messageStream
   get  "/:chan/recent"   recentMessages
   get  "/:chan/me"       getMe
@@ -101,7 +109,13 @@ routes = do
 
 fuck r = r >>= either 
   (\(R.Error x) -> error . show $ "you fucked redis: " <> x)
-  return
+  pure
+
+{-
+fucker r = r >>= either 
+  (\(R.Error x) -> error . show $ "you fucked redis: " <> x)
+  (\x -> x >>= pure)
+-}
 
 fucking r = r >>= maybe
   (error "you thought you didn't fuck up but you did.")
@@ -146,17 +160,25 @@ associate that client with that id
 
 -}
 
-data ChanInfo = ChanInfo {name::C.ByteString, userCount::Integer, messageCount::Integer}
+data ChanInfo = ChanInfo {name::C.ByteString, userCount::Integer, messageCount::Integer, activeUsers::Integer}
   deriving (Show, Typeable, Data)
 
+instance ToJSON ChanInfo where
+  toJSON = GSON.toJSON
+
 --chanInfo :: C.ByteString -> Redis ChanInfo
-chanInfo chan = ChanInfo chan <$> userCount where
-  parseInt = maybe (error "ahhhh") id . maybeResult . parse decimal 
+chanInfo chan = ChanInfo chan <$> userCount <*> messageCount <*> activeUsers where
+  parseInt = either (error) id . parseOnly decimal
   userCountRaw = fucking . fuck $ R.get ("chan["<>chan<>"].userCount")
-  messageCount = fucking . fuck $ R.get 
+  messageCountRaw = fucking . fuck $ R.get ("chan["<>chan<>"].messageCount") 
+  activeUsersRaw = fucking . fuck $ R.get ("chan["<>chan<>"].activeUsers")
   userCount = parseInt <$> userCountRaw
+  messageCount = parseInt <$> messageCountRaw
+  activeUsers = parseInt <$> activeUsersRaw
 
-
+chanInfo' chan = do
+  conn <- liftIO . connect $ defaultConnectInfo
+  redis conn (chanInfo chan) >>= json
 
 foobar chan poster = do
   let chan' = "chan[" <> chan <> "]"
@@ -210,7 +232,7 @@ data User = User {
     userId :: C.ByteString
   , userColor :: Maybe C.ByteString
   , userName :: Maybe C.ByteString
-}
+} deriving Show
 
 instance ToJSON User where
   toJSON (User id color name) = object ["id" .= id, "color" .= color, "name" .= name]
@@ -232,18 +254,29 @@ changeMe chan = do
   text "ok"
 
 
+
+-- stateless retrieval of user info.
+getUserInfo :: C.ByteString -> C.ByteString -> Redis User
+getUserInfo chan user = User user <$> color <*> name where
+  name   = get "name"
+  color  = get "color"
+  attr x = "chan["<>chan<>"].users["<>user<>"]."<>x
+  get    = fuck . R.get . attr
+
 getOrCreateName :: C.ByteString -> C.ByteString -> Redis C.ByteString
 getOrCreateName chan userId = getName >>= maybe assignName return where
   getName = fuck $ R.get nameKey
   assignName = do
     n <- fuck $ R.incr counterKey
     let name = fromString $ "user" ++ (show n)
+
     R.set nameKey name
     return name
   base = "chan["<>chan<>"]"
   nameKey = base<>".users["<>userId<>"].name"
   counterKey = base<>".userCount"
 
+-- (Redis :+: Maybe) User
 
 
 userInfo' :: C.ByteString -> C.ByteString -> Redis User
@@ -251,13 +284,17 @@ userInfo' chan user = User user <$> color <*> name where
   color = Just <$> getOrAssignColor chan user
   name  = Just <$> getOrCreateName chan user
 
-
 redis :: Connection -> Redis a -> ActionM a
 redis conn = liftIO . runRedis conn
 
+
+{-
+ user info doesn't make much sense as is, it shouldn't create a user and color if the user doesn't exist. clients shouldn't be able to arbitrarily make users
+by hitting /channel/nonexistentuser
+-}
 userInfo chan userId = do
   conn <- liftIO . connect $ defaultConnectInfo
-  info <- redis conn $ userInfo' chan userId
+  info <- redis conn $ getUserInfo chan userId
   json info
 
 getMe = identify <$> request >>= json
@@ -275,11 +312,13 @@ extractMessage = ChatMsg     <$> payload <*> user <*> time where
   time     = truncate    <$> liftIO getPOSIXTime
 
 -- |publish 'msg' to 'chan' via redis
-publishMessage' :: C.ByteString -> ChatMsg -> Redis Integer
+--publishMessage' :: C.ByteString -> ChatMsg -> Redis Integer
 publishMessage' chan msg = do
   -- add this channel to the set of all channels
   -- [not used yet, but interesting]
   R.sadd "channels" [chan]
+
+  --R.sadd ("chan["<>chan<>"].usersDUMB") $ user msg
 
   R.incr ("chan["<>chan<>"].messageCount")
 
@@ -296,11 +335,12 @@ publishMessage' chan msg = do
   -- publish msg to all clients
   fuck $ R.publish chan event
 
+
 postMessage chan = do
   conn    <- liftIO . connect $ defaultConnectInfo
   let publishMessage = redis conn . publishMessage' chan 
-  listeners <- extractMessage >>= publishMessage
-  debug $ "postMessage " <> (C.pack . show $ listeners)
+  extractMessage >>= publishMessage
+  --debug $ "postMessage " <> (C.pack . show $ listeners)
   text "ok"
 
 debug x = liftIO . putStrLn . C.unpack $ x
@@ -362,19 +402,32 @@ single user from channel
 -}
 
 
+
 messageStream chan = do
   -- act as an EventSource stream
   header "Content-Type" "text/event-stream"
   -- create a connection to Redis
   conn <- liftIO . connect $ defaultConnectInfo
   -- Source of Bytestring from listening to a Redis pubsub channel
-  let stream  = sourceRedisChannel conn chan
+  let stream = src chan -- sourceRedisChannel conn chan
   -- turn Source of ByteString into Source of  Flush Builder
   let builder = CL.concatMap $ \x -> [Chunk $ insertByteString x, Flush]
   
+  let toIO = transPipe (liftIO . runRedis conn)
+
+  let cleanup = void . lift . register $ putStrLn "cleanup."
+  --let onEnd = addCleanup . const . liftIO . print $ "disconnect"
+  
   debug "subscribed"
 
-  source $ stream $= builder 
+  let x = (stream $= builder)
+
+  source . toIO $ x
+  --source $ cleanup >> (toIO $ stream $= builder)
+
+ -- source . toIO $ stream $= builder
+
+
 
 recentMessages' :: C.ByteString -> Redis [ChatMsg]
 recentMessages' chan = do
@@ -397,7 +450,7 @@ addr (S.SockAddrInet _  addr) = fromString . show $ addr
 addr (S.SockAddrInet6 _ _ (a, b, c, d) _) = B.concat . map (fromString . show) $ [a,b,c,d]
 addr (S.SockAddrUnix sock) = fromString sock
 
-identify req = B64.encode . sha1. B.concat $ [user_agent, ip] where
+identify req = B64.encode . sha1 . B.concat $ [user_agent, ip] where
     ip = fromString . show . addr . remoteHost $ req
     user_agent = maybe "" id . lookup hUserAgent .
         requestHeaders $ req
@@ -405,30 +458,32 @@ identify req = B64.encode . sha1. B.concat $ [user_agent, ip] where
 toMaybe = either (const Nothing) Just
 
 listChannels = do
-  conn <- liftIO $ connect defaultConnectInfo
+  conn <- liftIO $ connect R.defaultConnectInfo
   channels <- redis conn $ R.smembers "channels"
   json . toMaybe $ channels
 
 keepAlive conn = runRedis conn $ do
   Right chans <- R.smembers "channels"
-  forM_ chans $ \chan ->
-    publish chan . serverComment $ "keep alive"
+  forM_ chans $ \chan -> do
+    online <- fuck $ R.publish chan . serverComment $ "keep alive"
+    void $ R.set ("chan["<>chan<>"].activeUsers") . lazy2Strict . encode $ online
 
 -- Redis Stuff
+subscribe :: (FromJSON a, R.MonadRedis r) => C.ByteString -> Source r a
+subscribe chan = mapOutputMaybe (decode.fromChunks.return) $  src chan
+
 subscribe' :: B.ByteString -> Redis (Either R.Reply B.ByteString)
 subscribe' channel = sendRequest ["SUBSCRIBE", channel]
 
-recvMsg conn = do
-  r <- liftIO . runRedis conn $ recv
-  yield . pubsubToBS . decodeMsg $ r
+src :: R.MonadRedis r => C.ByteString -> Source r C.ByteString
+src chan = do
+  liftRedis . subscribe' $ chan
+  forever $ R.recv >>= yield . pubsubToBS . R.decodeMsg
 
+instance R.MonadRedis r => R.MonadRedis (ConduitM i o r) where
+  liftRedis = lift . liftRedis 
 
-sourceRedisChannel conn chan = do
-  liftIO . runRedis conn . subscribe' $ chan
-  let loop = recvMsg conn >> loop
-  loop
-
-pubsubToBS (Msg (Message _ msg)) = msg
+pubsubToBS (R.Msg (R.Message _ msg)) = msg
 
 serverEvent n d = foo $ ServerEvent n' Nothing [d'] where
   n' = Just . fromByteString . C.cons ' ' $ n
